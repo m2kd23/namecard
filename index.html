@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<title>명함</title>
+<style>
+:root{--b:#2563eb;--bg:#f4f6fa;--t:#111827;--g:#6b7280;--l:#e5e7eb;--r:#dc2626}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--t);font:16px/1.4 system-ui,"Noto Sans KR",sans-serif}
+#app{max-width:560px;margin:0 auto;padding:0 0 90px}
+header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--l);display:flex;align-items:center;gap:8px;padding:10px 12px;min-height:54px}
+header h1{font-size:19px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib{border:0;background:none;font-size:15px;color:var(--b);padding:8px;font-weight:600}
+.pad{padding:12px}
+.row{background:#fff;border-radius:12px;padding:14px;margin-bottom:10px;display:flex;gap:10px;align-items:center}
+.row .m{flex:1;min-width:0}
+.row b{display:block;font-size:17px}
+.row span{color:var(--g);font-size:14px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.n{background:var(--b);color:#fff;border-radius:99px;padding:2px 10px;font-size:14px}
+input,textarea{width:100%;font:inherit;padding:12px;border:1px solid var(--l);border-radius:10px;background:#fff;margin-bottom:8px}
+textarea{min-height:80px;resize:vertical}
+.btn{border:0;border-radius:12px;background:var(--b);color:#fff;font:600 16px inherit;padding:14px;flex:1;text-align:center;text-decoration:none;display:block}
+.btn.s{background:#fff;color:var(--b);border:1px solid var(--b)}
+.btn.d{background:#fff;color:var(--r);border:1px solid var(--r)}
+.btns{display:flex;gap:8px;margin:8px 0}
+nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--l);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;border:0;background:none;padding:14px 0;font:600 16px inherit;color:var(--g)}
+nav button.on{color:var(--b)}
+.bar{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--l);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;max-width:560px;margin:0 auto}
+.fab{position:fixed;right:18px;bottom:78px;width:58px;height:58px;border-radius:50%;border:0;background:var(--b);color:#fff;font-size:32px;box-shadow:0 4px 12px #0004}
+.item{background:#fff;border-radius:12px;padding:10px;margin-bottom:10px}
+.item .top{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.item img,.th{width:72px;height:48px;object-fit:cover;border-radius:6px;background:var(--l)}
+.item .st{flex:1;color:var(--g);font-size:14px}
+.chk{width:24px;height:24px;margin:0;flex:none}
+.big{width:100%;border-radius:10px;margin-bottom:10px}
+.empty{text-align:center;color:var(--g);padding:40px 0}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<nav id="nav"></nav>
+<input id="camIn" type="file" accept="image/*" capture="environment" hidden>
+<input id="picIn" type="file" accept="image/*" multiple hidden>
+<input id="restIn" type="file" accept=".json,application/json" hidden>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+const fmtD = d => (d || '').replace(/-/g, '.');
+const fmtT = t => { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+const MAX = 30;
+
+/* ---------- 저장소 (핸드폰 안 IndexedDB) ---------- */
+let db, M = [], C = [], L = [];
+const idb = () => new Promise((res, rej) => {
+  const r = indexedDB.open('namecard', 1);
+  r.onupgradeneeded = () => ['m', 'c', 'l'].forEach(n => r.result.createObjectStore(n, {keyPath: 'id'}));
+  r.onsuccess = () => { db = r.result; res(); };
+  r.onerror = () => rej(r.error);
+});
+const getAll = n => new Promise(r => { const q = db.transaction(n).objectStore(n).getAll(); q.onsuccess = () => r(q.result); });
+const put = (n, v) => new Promise(r => { const t = db.transaction(n, 'readwrite'); t.objectStore(n).put(v); t.oncomplete = r; });
+const del = (n, id) => new Promise(r => { const t = db.transaction(n, 'readwrite'); t.objectStore(n).delete(id); t.oncomplete = r; });
+
+/* ---------- 화면 이동 (안드로이드 뒤로가기 지원) ---------- */
+let view = {s: 'list'}, draft = null, sel = new Set(), q = '';
+function go(v, replace) { view = v; history[replace ? 'replaceState' : 'pushState'](v, ''); render(); window.scrollTo(0, 0); }
+window.addEventListener('popstate', e => { view = e.state || {s: 'list'}; if (view.s === 'new' && !draft) view = {s: 'list'}; render(); });
+
+/* ---------- 화면 ---------- */
+function render() {
+  const a = $('#app'), nav = $('#nav'), v = view;
+  nav.style.display = v.s === 'new' ? 'none' : 'flex';
+  const tab = v.s === 'search' ? 's' : v.s === 'calls' ? 'c' : 'm';
+  nav.innerHTML = [['m', '미팅', {s: 'list'}], ['s', '검색', {s: 'search'}], ['c', '통화', {s: 'calls'}]]
+    .map(([k, t]) => `<button class="${tab === k ? 'on' : ''}" data-act="tab" data-t="${k}">${t}</button>`).join('');
+  if (v.s === 'list') a.innerHTML = vList();
+  else if (v.s === 'new') { a.innerHTML = vNew(); renderItems(); }
+  else if (v.s === 'meeting') a.innerHTML = vMeeting(v.id);
+  else if (v.s === 'card') a.innerHTML = vCard(v.id);
+  else if (v.s === 'search') { a.innerHTML = vSearch(); }
+  else if (v.s === 'calls') a.innerHTML = vCalls();
+}
+const head = (t, back, right = '') => `<header>${back ? '<button class="ib" data-act="back">←</button>' : ''}<h1>${esc(t)}</h1>${right}</header>`;
+const mTitle = m => m.purpose || m.place || '미팅';
+const cnt = id => C.filter(c => c.mid === id).length;
+
+function vList() {
+  const ms = [...M].sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id));
+  return head('미팅', false, '<button class="ib" data-act="backup">백업</button><button class="ib" data-act="restore">복원</button>') +
+    `<div class="pad">${ms.map(m => `<div class="row" data-act="meeting" data-id="${m.id}"><div class="m"><b>${esc(mTitle(m))}</b><span>${esc([m.place, fmtD(m.date)].filter(Boolean).join(' · '))}</span></div><span class="n">${cnt(m.id)}</span></div>`).join('') || '<div class="empty">+ 를 눌러 명함을 추가하세요</div>'}</div>
+    <button class="fab" data-act="newMeeting">+</button>`;
+}
+
+function newDraft(m) {
+  draft = m ? {mid: m.id, purpose: m.purpose, place: m.place, date: m.date, memo: m.memo, items: []}
+            : {mid: null, purpose: '', place: '', date: today(), memo: '', items: []};
+}
+function vNew() {
+  const d = draft;
+  return head(d.mid ? '미팅 수정 / 명함 추가' : '새 미팅', true) + `<div class="pad">
+    <input data-d="purpose" placeholder="미팅 목적" value="${esc(d.purpose)}">
+    <div class="two"><input data-d="place" placeholder="장소" value="${esc(d.place)}"><input data-d="date" type="date" value="${esc(d.date)}"></div>
+    <textarea data-d="memo" placeholder="메모">${esc(d.memo)}</textarea>
+    <div class="btns"><button class="btn s" data-act="shoot">📷 촬영</button><button class="btn s" data-act="pick">앨범</button></div>
+    <div id="items"></div></div>
+    <div class="bar"><button class="btn" data-act="saveDraft">저장</button></div>`;
+}
+function itemHtml(it, i) {
+  return `<div class="item" data-id="${it.id}"><div class="top"><img data-act="zoom" src="${it.thumb}"><span class="st" id="st-${it.id}">${esc(it.status || '')}</span><button class="ib" data-act="rmItem" data-i="${i}">삭제</button></div>
+    <input data-i="${it.id}" data-k="name" placeholder="이름" value="${esc(it.name)}">
+    <div class="two"><input data-i="${it.id}" data-k="company" placeholder="회사" value="${esc(it.company)}"><input data-i="${it.id}" data-k="title" placeholder="직책" value="${esc(it.title)}"></div>
+    <input data-i="${it.id}" data-k="phone" type="tel" placeholder="전화" value="${esc(it.phone)}">
+    <input data-i="${it.id}" data-k="email" type="email" placeholder="이메일" value="${esc(it.email)}">
+    <input data-i="${it.id}" data-k="memo" placeholder="메모" value="${esc(it.memo)}"></div>`;
+}
+function renderItems() { const e = $('#items'); if (e) e.innerHTML = draft.items.map(itemHtml).join(''); }
+
+function vMeeting(id) {
+  const m = M.find(x => x.id === id); if (!m) return head('미팅', true);
+  const cs = C.filter(c => c.mid === id);
+  return head(mTitle(m), true, '<button class="ib" data-act="editMeeting">수정 / 추가</button>') + `<div class="pad">
+    <div style="color:var(--g);margin-bottom:6px">${esc([m.place, fmtD(m.date)].filter(Boolean).join(' · '))}</div>
+    ${m.memo ? `<div style="margin-bottom:12px;white-space:pre-wrap">${esc(m.memo)}</div>` : ''}
+    ${cs.map(c => `<div class="row"><input type="checkbox" class="chk" data-act="sel" data-id="${c.id}" ${sel.has(c.id) ? 'checked' : ''}><div class="m" data-act="card" data-id="${c.id}"><b>${esc(c.name || c.phone || c.email || '이름 없음')}</b><span>${esc([c.company, c.title].filter(Boolean).join(' · '))}</span></div></div>`).join('') || '<div class="empty">명함 없음</div>'}
+    ${cs.length ? `<div class="btns"><button class="btn s" data-act="allSel">전체선택</button><button class="btn" data-act="mSms">문자</button><button class="btn" data-act="mMail">메일</button></div>` : ''}
+    <div class="btns"><button class="btn d" data-act="delMeeting">미팅 삭제</button></div></div>`;
+}
+
+function vCard(id) {
+  const c = C.find(x => x.id === id); if (!c) return head('명함', true);
+  const m = M.find(x => x.id === c.mid), ls = L.filter(l => l.cid === id).sort((a, b) => b.t - a.t);
+  const f = (k, ph, type = 'text') => `<input data-c="${k}" type="${type}" placeholder="${ph}" value="${esc(c[k])}">`;
+  return head(c.name || '명함', true) + `<div class="pad">
+    ${c.thumb ? `<img class="big" data-act="zoom" src="${c.thumb}">` : ''}
+    ${m ? `<div class="row" data-act="meeting" data-id="${m.id}"><div class="m"><b>${esc(mTitle(m))}</b><span>${esc([m.place, fmtD(m.date)].filter(Boolean).join(' · '))}</span></div></div>` : ''}
+    ${f('name', '이름')}<div class="two">${f('company', '회사')}${f('title', '직책')}</div>${f('phone', '전화', 'tel')}${f('email', '이메일', 'email')}
+    <textarea data-c="memo" placeholder="메모">${esc(c.memo)}</textarea>
+    <div class="btns">${c.phone ? `<a class="btn" data-act="call" data-id="${c.id}" href="tel:${esc(c.phone)}">전화</a><a class="btn" href="sms:${esc(c.phone)}">문자</a>` : ''}${c.email ? `<a class="btn" href="mailto:${esc(c.email)}">메일</a>` : ''}</div>
+    <div class="btns"><button class="btn s" data-act="vcf" data-id="${c.id}">${c.inContacts ? '연락처 다시 추가' : '연락처 추가'}</button><button class="btn d" data-act="delCard" data-id="${c.id}">삭제</button></div>
+    ${ls.length ? `<h3 style="margin:18px 0 8px">통화 기록</h3>` + ls.map(l => `<div class="row"><div class="m">${fmtT(l.t)}</div></div>`).join('') : ''}</div>`;
+}
+
+const dateKey = d => { if (!d) return ''; const [y, m, dd] = d.split('-'); return `${d} ${y}.${m}.${dd} ${y}년 ${+m}월 ${+dd}일 ${+m}월 ${y}년`; };
+function vSearch() {
+  return head('검색', false) + `<div class="pad"><input id="q" placeholder="미팅, 장소, 날짜, 이름, 메모" value="${esc(q)}" autocomplete="off"><div id="res">${searchHtml()}</div></div>`;
+}
+function searchHtml() {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return '';
+  const hit = s => words.every(w => s.includes(w));
+  const mk = m => [m.purpose, m.place, m.memo, dateKey(m.date)].join(' ').toLowerCase();
+  const ms = M.filter(m => hit(mk(m)));
+  const cs = C.filter(c => { const m = M.find(x => x.id === c.mid); return hit([c.name, c.company, c.title, c.phone, c.email, c.memo, m ? mk(m) : ''].join(' ').toLowerCase()); });
+  return ms.map(m => `<div class="row" data-act="meeting" data-id="${m.id}"><div class="m"><b>${esc(mTitle(m))}</b><span>${esc([m.place, fmtD(m.date)].filter(Boolean).join(' · '))}</span></div><span class="n">${cnt(m.id)}</span></div>`).join('') +
+    cs.map(c => { const m = M.find(x => x.id === c.mid); return `<div class="row" data-act="card" data-id="${c.id}"><div class="m"><b>${esc(c.name || c.phone || '이름 없음')}</b><span>${esc([c.company, c.title].filter(Boolean).join(' · '))}</span><span>${esc(m ? mTitle(m) : '')}</span></div></div>`; }).join('') ||
+    '<div class="empty">결과 없음</div>';
+}
+
+function vCalls() {
+  const ls = [...L].sort((a, b) => b.t - a.t);
+  return head('통화 기록', false) + `<div class="pad">${ls.map(l => `<div class="row" data-act="card" data-id="${l.cid}"><div class="m"><b>${esc(l.name || l.phone)}</b><span>${esc(l.phone)}</span></div><span style="color:var(--g)">${fmtT(l.t)}</span></div>`).join('') || '<div class="empty">기록 없음</div>'}</div>`;
+}
+
+/* ---------- 명함 사진 → 글자 읽기 (핸드폰 안에서 처리) ---------- */
+const TITLES = '담당|사무관|주무관|연구사|연구관|서기관|사무장|계장|파트장|팀원|리더|위원|변호사|회계사|세무사|학장|학과장|총장|학부장|이사장|소장|국장|대표이사|대표|이사|사장|부사장|회장|전무|상무|본부장|실장|팀장|부장|차장|과장|대리|주임|사원|교수|박사|원장|센터장|매니저|디렉터|책임|선임|수석|연구원|CEO|CTO|CFO|COO|Manager|Director|Engineer|Professor|Designer|President|Head|Lead';
+const COMP = '주식회사|\\(주\\)|㈜|회사|대학|병원|은행|연구원|연구소|진흥원|진흥|공사|공단|재단|협회|협의회|위원회|조합|센터|그룹|산업|기술|정보|시스템|소프트|전자|건설|금융|보험|법인|Inc|Co\\.|Corp|Ltd|LLC|Group|University|Hospital|Bank|적십자|농협|수협|신협|증권|생명|화재|카드|제약|의원|학원|출판|방송|신문|통신|항공|물산|상사|엔지니어링|솔루션|네트웍스|컴퍼니|스튜디오|테크|랩스';
+const DEPT = '본부|팀|부서|사업부|실\\b|과\\b';
+const SUR = '김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민나진지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예경봉복판옹빈온피라곡독';
+const cleanT = s => String(s || '').replace(/\s+/g, ' ').replace(/^[^\w가-힣(㈜]+|[^\w가-힣)㈜.]+$/g, '').trim();
+// lines: [{t, h, y}] — 글자 줄 목록(t=내용, h=글자 높이, y=세로 위치)
+function parseCard(lines, words = []) {
+  const o = {name: '', company: '', title: '', phone: '', email: ''};
+  const all = lines.map(l => l.t).join('\n').replace(/\.(or|co|go|ac|re|ne|pe)[ .]?kr\b/gi, '.$1.kr').replace(/\.0r\./gi, '.or.');
+  // 이메일: 올바른 도메인으로 끝나는 가장 긴 것
+  const ems = (all.match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g) || []).map(e => e.replace(/^(e-?mail|e)[.:,]+/i, '').replace(/^E(?=[a-z])/, '').replace(/\.$/, '').replace(/\.(or|co|go|ac)$/i, '.$1.kr'));
+  o.email = ems.sort((a, b) => (/\.(kr|com|net|org|io|co|ac|go|or|biz|info|edu)$/i.test(b) - /\.(kr|com|net|org|io|co|ac|go|or|biz|info|edu)$/i.test(a)) || b.length - a.length)[0] || '';
+  // 전화: 휴대폰(010) 우선, 팩스 제외
+  const phones = [];
+  all.split('\n').forEach(l => { (l.match(/(?:^|[^\d])((?:\+82[-. ]?)?\(?0?\d{1,2}\)?[-. =]?\d{3,4}[-. =]\d{4})(?!\d)/g) || []).forEach(m => { const p = m.replace(/^[^\d+(]/, '').replace(/[. )(=]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, ''); const at = l.indexOf(m); if (/(^|[^A-Za-z])(F|FAX|팩스)\s*[:.]?\s*$/i.test(l.slice(Math.max(0, at - 6), at + 1))) return; phones.push(p); }); });
+  const cnt = {}; phones.forEach(p => cnt[p] = (cnt[p] || 0) + 1);
+  const uniq = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || b.length - a.length);
+  o.phone = uniq.find(p => /^(\+?82-?)?0?10-?\d{4}-?\d{4}$/.test(p)) || uniq.find(p => /^010/.test(p)) || uniq[0] || '';
+  const tre = new RegExp(TITLES, 'i'), cre = new RegExp(COMP, 'i'), dre = new RegExp(DEPT);
+  const addr = /특별시|광역시|[시구군동읍면로길]\s*\d|\d{3,}|@|www\.|\.(com|kr|net)/i;
+  const L = lines.filter(l => l.t.length > 1).sort((a, b) => a.y - b.y);
+  // 이름: 한글 2~4자 중 글자가 가장 큰 줄 (성씨로 시작하면 가산)
+  let bestN = null;
+  const BAD = /(원|청|회|사|단|소|국|교|센터|협회|재단|기반|지원|분석|대학|학교)$/;
+  // 글자 사이가 넓은 이름("송   정   임")은 글자가 하나씩 따로 읽히므로, 큰 글자가 한 줄에 늘어선 것을 묶음
+  const glyphCands = [];
+  { const gl = words.filter(x => /^[가-힣]{1,2}$/.test(x.t) && x.conf >= 30);
+    const hs = words.map(x => x.h).sort((a, b) => a - b), med = hs[hs.length >> 1] || 1, rows = [];
+    gl.filter(x => x.h >= med * 1.4).sort((a, b) => a.cy - b.cy).forEach(x => { const r = rows.find(r => Math.abs(r.cy - x.cy) < x.h * 0.4); r ? r.items.push(x) : rows.push({cy: x.cy, items: [x]}); });
+    rows.forEach(r => { const it = r.items.sort((a, b) => a.x0 - b.x0); let run = [it[0]];
+      const flush = () => { const f = run.map(x => x.t).join(''); if (run.length >= 2 && /^[가-힣]{2,4}$/.test(f)) glyphCands.push({f, h: Math.max(...run.map(x => x.h))}); };
+      for (let i = 1; i < it.length; i++) { const gap = it[i].x0 - it[i - 1].x1, h = Math.max(it[i].h, it[i - 1].h); if (gap >= h * 0.5 && gap <= h * 3.2) run.push(it[i]); else { flush(); run = [it[i]]; } }
+      flush(); }); }
+  for (const g of glyphCands) { if (!SUR.includes(g.f[0]) || tre.test(g.f) || cre.test(g.f) || dre.test(g.f) || BAD.test(g.f)) continue; const sc = g.h * 1.8 * (SUR.includes(g.f[0]) ? 1.3 : 1); if (!bestN || sc > bestN.s) bestN = {s: sc, f: g.f}; }
+  const nameFrom = t => { // 한 줄에서 이름 후보를 뽑음 ("교수OOO", "OOO 영문이름", "O O O공과대학장/…" 형태)
+    const out = []; let m;
+    if ((m = t.match(/^([가-힣](?: [가-힣]){1,3})\s*(.*)$/)) && /[가-힣] [가-힣]/.test(m[1])) out.push({f: m[1].replace(/ /g, ''), k: 1.6});
+    if ((m = t.match(new RegExp('^(' + TITLES + ')\\s*([가-힣]{2,4})$', 'i')))) out.push({f: m[2], k: 1.5});
+    if ((m = t.match(new RegExp('^([가-힣]{2,4})\\s*(' + TITLES + ')$', 'i')))) out.push({f: m[1], k: 1.5});
+    if ((m = t.match(/^([가-힣]{2,4})\s*[A-Z][A-Za-z .'-]{2,}$/))) out.push({f: m[1], k: 1.6});
+    if (/^[가-힣]{2,4}$/.test(t)) out.push({f: t, k: 1});
+    return out;
+  };
+  for (const l of L) {
+    for (const c of nameFrom(l.t)) {
+      if (tre.test(c.f) || cre.test(c.f) || dre.test(c.f) || BAD.test(c.f)) continue;
+      const score = l.h * c.k * (SUR.includes(c.f[0]) ? 1.3 : 1);
+      if (!bestN || score > bestN.s) bestN = {s: score, f: c.f};
+    }
+  }
+  if (bestN) o.name = bestN.f;
+  else { const e = L.find(l => /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(l.t)); if (e) o.name = e.t; }
+  const nre = o.name ? new RegExp(o.name.split('').join('\\s?') + '\\s*') : null;
+  // 직책: 위에서부터 첫 번째 직책 단어가 들어간 줄 (이름이 같이 있으면 이름은 뺌)
+  const tl = L.find(l => tre.test(l.t) && l.t.length <= 40 && !addr.test(l.t) && l.t.replace(/\s/g, '') !== o.name);
+  if (tl) { o.title = tl.t.replace(/\s*\/\s*/g, ' / '); if (nre) o.title = o.title.replace(nre, '').replace(/^[\s/|]+|[\s/|]+$/g, ''); }
+  // 회사: 회사 단어가 있고 부서·주소·직책이 아닌 줄 중 글자가 가장 큰 것 (로고)
+  const cs = L.filter(l => cre.test(l.t) && !dre.test(l.t) && !addr.test(l.t) && !tre.test(l.t.replace(/연구원/g, '')) && /[가-힣A-Za-z]{3,}/.test(l.t) && l.t.length <= 30);
+  const endBonus = t => /(교|사|원|단|회|청|처|공|소|행|부)$/.test(t.replace(/\s/g, '')) ? 1.3 : 1;
+  cs.sort((a, b) => b.h * endBonus(b.t) - a.h * endBonus(a.t) || b.t.replace(/\s/g, '').length - a.t.replace(/\s/g, '').length);
+  if (cs[0]) o.company = cs[0].t;
+  else { // 회사 단어가 없으면 가장 큰 한글 줄(로고)로 추정
+    const g = L.filter(l => /^[가-힣 ]{3,15}$/.test(l.t) && !dre.test(l.t) && !tre.test(l.t) && l.t.replace(/\s/g, '') !== o.name).sort((a, b) => b.h - a.h)[0];
+    if (g) o.company = g.t;
+  }
+  return o;
+}
+const loadScript = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+let workerP = null, ocrQ = Promise.resolve();
+const getWorker = () => workerP || (workerP = (async () => { await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'); return Tesseract.createWorker('kor+eng'); })().catch(e => { workerP = null; throw e; }));
+/* 사진 1장에 여러 명함이 있으면 네모 영역을 찾아 각각 분리 */
+function detectCards(bmp) {
+  const k = 400 / Math.max(bmp.width, bmp.height), W = Math.round(bmp.width * k), H = Math.round(bmp.height * k), N = W * H;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(bmp, 0, 0, W, H);
+  const px = x.getImageData(0, 0, W, H).data, g = new Float32Array(N), hist = new Array(256).fill(0);
+  for (let i = 0; i < N; i++) { g[i] = (px[i * 4] * 77 + px[i * 4 + 1] * 150 + px[i * 4 + 2] * 29) / 256; hist[g[i] | 0]++; }
+  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let wB = 0, sB = 0, best = 0, th = 128;
+  for (let i = 0; i < 256; i++) { wB += hist[i]; if (!wB) continue; const wF = N - wB; if (!wF) break; sB += i * hist[i]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) ** 2; if (v > best) { best = v; th = i; } }
+  // 질감이 매끈한 곳(명함)과 거친 곳(가죽·나무 책상)을 구분
+  const R = 2, smooth = new Uint8Array(N);
+  for (let y = R; y < H - R; y++) for (let xx = R; xx < W - R; xx++) {
+    let s = 0, s2 = 0; for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) { const v = g[(y + dy) * W + xx + dx]; s += v; s2 += v * v; }
+    const n = (2 * R + 1) ** 2; smooth[y * W + xx] = Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2)) < 7 ? 1 : 0;
+  }
+  const bright = new Uint8Array(N), dark = new Uint8Array(N);
+  for (let i = 0; i < N; i++) { bright[i] = g[i] > th ? 1 : 0; dark[i] = 1 - bright[i]; }
+  const er = m => { const o = new Uint8Array(N); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; o[i] = m[i] && m[i - 1] && m[i + 1] && m[i - W] && m[i + W] ? 1 : 0; } return o; };
+  const smoothE = er(er(smooth)); // 붙어 있는 명함 사이의 가는 연결을 끊음
+  const find = (mask, e, minFill) => {
+    const seen = new Uint8Array(N), out = [], st = [];
+    for (let s = 0; s < N; s++) {
+      if (seen[s] || !mask[s]) continue;
+      let area = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; st.push(s); seen[s] = 1;
+      while (st.length) {
+        const p = st.pop(), qx = p % W, qy = (p / W) | 0; area++;
+        if (qx < x0) x0 = qx; if (qx > x1) x1 = qx; if (qy < y0) y0 = qy; if (qy > y1) y1 = qy;
+        for (const n of [qx > 0 && p - 1, qx < W - 1 && p + 1, qy > 0 && p - W, qy < H - 1 && p + W]) if (n !== false && !seen[n] && mask[n]) { seen[n] = 1; st.push(n); }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1, ba = bw * bh, r = Math.max(bw, bh) / Math.min(bw, bh);
+      if (ba >= N * 0.03 && ba <= N * 0.9 && area / ba >= minFill && r >= 1.1 && r <= 2.8) out.push({x0: Math.max(0, x0 - e), y0: Math.max(0, y0 - e), x1: Math.min(W - 1, x1 + e), y1: Math.min(H - 1, y1 + e)});
+    }
+    return out;
+  };
+  const cands = [find(smoothE, 2, 0.4), find(bright, 0, 0.5), find(dark, 0, 0.5)];
+  let r = cands.reduce((m, a) => a.length > m.length ? a : m, cands[0]); // 가장 많이 찾은 기준 (동률이면 매끈함 기준)
+  { const area = o => (o.x1 - o.x0 + 1) * (o.y1 - o.y0 + 1), kept = [];
+    [...r].sort((a, b) => area(b) - area(a)).forEach(o => {
+      const ov = kept.reduce((m, k) => Math.max(m, Math.max(0, Math.min(o.x1, k.x1) - Math.max(o.x0, k.x0) + 1) * Math.max(0, Math.min(o.y1, k.y1) - Math.max(o.y0, k.y0) + 1)), 0);
+      if (ov < area(o) * 0.25) kept.push(o); });
+    r = kept; }
+  if (r.length < 2) return [{x: 0, y: 0, w: bmp.width, h: bmp.height}];
+  const rows = []; // 위→아래, 왼쪽→오른쪽 순서
+  [...r].sort((p, q) => p.y0 - q.y0).forEach(o => { const cy = (o.y0 + o.y1) / 2, row = rows.find(w => Math.abs(w.cy - cy) < (o.y1 - o.y0) * 0.5); row ? row.items.push(o) : rows.push({cy, items: [o]}); });
+  r = rows.flatMap(w => w.items.sort((p, q) => p.x0 - q.x0));
+  const pad = 0.015;
+  return r.map(o => { const sx = Math.max(0, (o.x0 / W - pad)) * bmp.width, sy = Math.max(0, (o.y0 / H - pad)) * bmp.height, ex = Math.min(1, ((o.x1 + 1) / W + pad)) * bmp.width, ey = Math.min(1, ((o.y1 + 1) / H + pad)) * bmp.height; return {x: sx, y: sy, w: ex - sx, h: ey - sy}; });
+}
+/* 그림자·조명 차이를 없애 글자만 또렷하게 (국소 이진화) */
+function binarize(c) {
+  const ctx = c.getContext('2d'), w = c.width, h = c.height, d = ctx.getImageData(0, 0, w, h), p = d.data, g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) g[i] = (p[i * 4] * 77 + p[i * 4 + 1] * 150 + p[i * 4 + 2] * 29) / 256;
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += g[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; } }
+  const R = Math.max(10, Math.round(Math.max(w, h) / 32));
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+      const m = (I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+      const v = g[y * w + x] < m * 0.87 ? 0 : 255, o = (y * w + x) * 4; p[o] = p[o + 1] = p[o + 2] = v;
+    }
+  }
+  ctx.putImageData(d, 0, 0); return c;
+}
+function rotate(c, deg) {
+  const o = document.createElement('canvas'), q = deg === 90 || deg === 270;
+  o.width = q ? c.height : c.width; o.height = q ? c.width : c.height;
+  const x = o.getContext('2d'); x.translate(o.width / 2, o.height / 2); x.rotate(deg * Math.PI / 180); x.drawImage(c, -c.width / 2, -c.height / 2); return o;
+}
+/* ---------- 글자 읽기: PaddleOCR(한국어) 우선, 실패하면 Tesseract ---------- */
+let paddleP = null;
+const getPaddle = () => paddleP || (paddleP = (async () => {
+  const mod = await import('https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2/+esm');
+  const base = new URL('models/', location.href).href; // 모델 파일은 앱과 같은 곳에서 받음
+  return mod.PaddleOCR.create({
+    textDetectionModelName: 'PP-OCRv5_mobile_det', textDetectionModelAsset: {url: base + 'PP-OCRv5_mobile_det_onnx_infer.tar'},
+    textRecognitionModelName: 'korean_PP-OCRv5_mobile_rec', textRecognitionModelAsset: {url: base + 'korean_PP-OCRv5_mobile_rec_onnx_infer.tar'},
+    ortOptions: {backend: 'auto'}
+  });
+})().catch(e => { paddleP = null; throw e; }));
+async function readWithPaddle(p) {
+  const ocr = await getPaddle();
+  let best = null;
+  for (const deg of p.tall ? [0, 270, 90] : [0]) { // 옆으로 누운 명함은 방향을 돌려 보고 가장 잘 읽히는 쪽을 고름
+    const [r] = await ocr.predict(deg ? rotate(p.color, deg) : p.color);
+    const lines = r.items.filter(x => x.score >= 0.5).map(x => {
+      const pts = (x.poly || []).map(q => Array.isArray(q) ? q : [q.x, q.y]), ys = pts.map(q => q[1]);
+      return {t: cleanT(x.text), h: ys.length ? Math.max(...ys) - Math.min(...ys) : 20, y: ys.length ? Math.min(...ys) : 0};
+    }).filter(l => l.t);
+    const o = parseCard(lines), sc = r.items.reduce((n, x) => x.score >= 0.7 ? n + x.text.length * x.score : n, 0)
+      + 60 * ['name', 'phone', 'email', 'company', 'title'].filter(k => o[k]).length + 60 * o.name.length;
+    if (!best || sc > best.sc) best = {sc, deg, lines};
+  }
+  return {lines: best.lines, deg: best.deg};
+}
+async function readWithTesseract(p) {
+  const w = await getWorker(), lines = [], words = []; let img = p.ocr, deg = 0;
+  if (p.tall) { // 옆으로 누운 명함: 0/90/270도 중 글자가 가장 잘 읽히는 방향을 고름
+    await w.setParameters({tessedit_pageseg_mode: '11'});
+    let best = null;
+    for (const d of [0, 90, 270]) {
+      const c = d ? rotate(p.ocr, d) : p.ocr, r = await w.recognize(c);
+      const sc = r.data.lines.reduce((n, l) => l.confidence >= 50 ? n + (l.text.match(/[가-힣A-Za-z0-9@]/g) || []).length : n, 0);
+      if (!best || sc > best.sc) best = {sc, d, c};
+    }
+    img = best.c; deg = best.d;
+  }
+  for (const mode of ['11', '3']) { // 흩어진 글자 + 일반 문단, 두 방식으로 읽어 합침
+    await w.setParameters({tessedit_pageseg_mode: mode});
+    const r = await w.recognize(img);
+    r.data.lines.forEach(l => { const t = cleanT(l.text); if (t && l.confidence >= 35) lines.push({t, h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0}); });
+    if (mode === '11') r.data.words.forEach(x => words.push({t: x.text.trim(), x0: x.bbox.x0, x1: x.bbox.x1, h: x.bbox.y1 - x.bbox.y0, cy: (x.bbox.y0 + x.bbox.y1) / 2, conf: x.confidence}));
+  }
+  return {lines, words, deg};
+}
+async function prepare(file) {
+  const bmp = await createImageBitmap(file);
+  return detectCards(bmp).map(b => {
+    const draw = (target, filter) => { const k = Math.min(3, target / Math.max(b.w, b.h)), c = document.createElement('canvas'); c.width = Math.round(b.w * k); c.height = Math.round(b.h * k); const x = c.getContext('2d'); if (filter) x.filter = filter; x.drawImage(bmp, b.x, b.y, b.w, b.h, 0, 0, c.width, c.height); return c; };
+    const t = draw(640);
+    return {thumb: t.toDataURL('image/jpeg', 0.6), thumbC: t, color: draw(1100), ocr: binarize(draw(1600)), tall: b.h > b.w};
+  });
+}
+function setField(it, k, v) { it[k] = v; const e = document.querySelector(`[data-i="${it.id}"][data-k="${k}"]`); if (e) e.value = v; }
+function setStatus(it, s) { it.status = s; const e = $('#st-' + it.id); if (e) e.textContent = s; }
+async function addFiles(files) {
+  files = [...files]; if (!draft) return;
+  for (const f of files) {
+    try {
+      for (const p of await prepare(f)) {
+      if (draft.items.length >= MAX) { alert(`한 번에 ${MAX}장까지 가능합니다`); return; }
+      const it = {id: uid(), thumb: p.thumb, name: '', company: '', title: '', phone: '', email: '', memo: '', status: '대기'};
+      draft.items.push(it); renderItems();
+      ocrQ = ocrQ.then(async () => {
+        if (!draft || !draft.items.includes(it)) return;
+        setStatus(it, '읽는 중…');
+        try {
+          let res;
+          try { res = await readWithPaddle(p); } // 1순위: PaddleOCR (더 정확)
+          catch (e) { console.warn('PaddleOCR 실패, Tesseract로 대체', e); res = await readWithTesseract(p); }
+          if (res.deg) { it.thumb = rotate(p.thumbC, res.deg).toDataURL('image/jpeg', 0.6); const im = document.querySelector(`.item[data-id="${it.id}"] img`); if (im) im.src = it.thumb; }
+          const o = parseCard(res.lines, res.words || []);
+          ['name', 'company', 'title', 'phone', 'email'].forEach(k => { if (!it[k]) setField(it, k, o[k]); });
+          setStatus(it, '');
+        } catch (e) { setStatus(it, '직접 입력'); }
+      });
+      }
+    } catch (e) { alert('사진을 열 수 없습니다'); }
+  }
+}
+
+/* ---------- 연락처(vcf), 백업 ---------- */
+function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+const vEsc = s => String(s || '').replace(/[\\;,]/g, m => '\\' + m).replace(/\n/g, '\\n');
+async function addContact(c) {
+  const m = M.find(x => x.id === c.mid);
+  const note = [m && mTitle(m), m && m.place, m && fmtD(m.date), c.memo].filter(Boolean).join(' / ');
+  const v = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${vEsc(c.name || c.phone || c.email)}`, `N:${vEsc(c.name)};;;;`, c.company && `ORG:${vEsc(c.company)}`, c.title && `TITLE:${vEsc(c.title)}`, c.phone && `TEL;TYPE=CELL:${vEsc(c.phone)}`, c.email && `EMAIL:${vEsc(c.email)}`, note && `NOTE:${vEsc(note)}`, 'END:VCARD'].filter(Boolean).join('\r\n');
+  download((c.name || 'contact') + '.vcf', v, 'text/vcard');
+  c.inContacts = true; await put('c', c);
+  for (const l of L.filter(l => l.cid === c.id)) await del('l', l.id); // 연락처에 추가한 사람은 별도 통화기록에서 제외
+  L = L.filter(l => l.cid !== c.id);
+  render();
+}
+
+/* ---------- 동작 ---------- */
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.d && draft) draft[t.dataset.d] = t.value;
+  else if (t.dataset.i && draft) { const it = draft.items.find(x => x.id === t.dataset.i); if (it) it[t.dataset.k] = t.value; }
+  else if (t.dataset.c && view.s === 'card') { const c = C.find(x => x.id === view.id); if (c) { c[t.dataset.c] = t.value; put('c', c); } }
+  else if (t.id === 'q') { q = t.value; $('#res').innerHTML = searchHtml(); }
+});
+$('#camIn').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+$('#picIn').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+$('#restIn').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    for (const m of d.m || []) await put('m', m); for (const c of d.c || []) await put('c', c); for (const l of d.l || []) await put('l', l);
+    M = await getAll('m'); C = await getAll('c'); L = await getAll('l'); render(); alert('복원 완료');
+  } catch (err) { alert('파일을 읽을 수 없습니다'); }
+};
+
+document.addEventListener('click', async e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  const act = el.dataset.act, id = el.dataset.id;
+  if (act === 'tab') { const t = el.dataset.t; go({s: t === 'm' ? 'list' : t === 's' ? 'search' : 'calls'}); }
+  else if (act === 'back') history.back();
+  else if (act === 'meeting') { sel = new Set(C.filter(c => c.mid === id).map(c => c.id)); go({s: 'meeting', id}); }
+  else if (act === 'card') go({s: 'card', id});
+  else if (act === 'newMeeting') { newDraft(); go({s: 'new'}); }
+  else if (act === 'editMeeting') { newDraft(M.find(m => m.id === view.id)); go({s: 'new'}); }
+  else if (act === 'zoom') { const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;z-index:50;background:#000d;display:flex;align-items:center;justify-content:center;padding:8px'; o.innerHTML = `<img src="${el.src}" style="max-width:100%;max-height:100%;border-radius:8px">`; o.onclick = () => o.remove(); document.body.appendChild(o); }
+  else if (act === 'shoot') $('#camIn').click();
+  else if (act === 'pick') $('#picIn').click();
+  else if (act === 'rmItem') { draft.items.splice(+el.dataset.i, 1); renderItems(); }
+  else if (act === 'saveDraft') {
+    const d = draft; let mid = d.mid;
+    const meta = {purpose: d.purpose.trim(), place: d.place.trim(), date: d.date, memo: d.memo.trim()};
+    let m = mid && M.find(x => x.id === mid);
+    if (m) Object.assign(m, meta); else { m = {id: uid(), ...meta}; M.push(m); }
+    await put('m', m);
+    for (const it of d.items) {
+      if (!(it.name || it.company || it.phone || it.email)) continue;
+      const c = {id: uid(), mid: m.id, thumb: it.thumb, name: it.name.trim(), company: it.company.trim(), title: it.title.trim(), phone: it.phone.trim(), email: it.email.trim(), memo: it.memo.trim(), inContacts: false};
+      C.push(c); await put('c', c);
+    }
+    draft = null; sel = new Set(C.filter(c => c.mid === m.id).map(c => c.id));
+    go({s: 'meeting', id: m.id}, true);
+  }
+  else if (act === 'sel') { el.checked ? sel.add(id) : sel.delete(id); }
+  else if (act === 'allSel') { const ids = C.filter(c => c.mid === view.id).map(c => c.id); if (ids.every(i => sel.has(i))) sel.clear(); else ids.forEach(i => sel.add(i)); render(); }
+  else if (act === 'mSms' || act === 'mMail') {
+    const cs = C.filter(c => sel.has(c.id));
+    if (act === 'mSms') { const p = cs.map(c => c.phone.replace(/[^\d+]/g, '')).filter(Boolean); if (!p.length) return alert('선택된 번호가 없습니다'); location.href = 'sms:' + p.join(','); }
+    else { const em = cs.map(c => c.email).filter(Boolean); if (!em.length) return alert('선택된 이메일이 없습니다'); location.href = 'mailto:?bcc=' + em.map(encodeURIComponent).join(','); }
+  }
+  else if (act === 'call') {
+    const c = C.find(x => x.id === id);
+    if (c && !c.inContacts) { const l = {id: uid(), cid: c.id, name: c.name, phone: c.phone, t: Date.now()}; L.push(l); put('l', l); }
+  }
+  else if (act === 'vcf') addContact(C.find(x => x.id === id));
+  else if (act === 'delCard') { if (confirm('이 명함을 삭제할까요?')) { await del('c', id); C = C.filter(c => c.id !== id); for (const l of L.filter(l => l.cid === id)) await del('l', l.id); L = L.filter(l => l.cid !== id); history.back(); setTimeout(render, 0); } }
+  else if (act === 'delMeeting') { if (confirm('미팅과 명함을 모두 삭제할까요?')) { const mid = view.id; for (const c of C.filter(c => c.mid === mid)) { await del('c', c.id); for (const l of L.filter(l => l.cid === c.id)) await del('l', l.id); } C = C.filter(c => c.mid !== mid); await del('m', mid); M = M.filter(m => m.id !== mid); L = await getAll('l'); history.back(); setTimeout(render, 0); } }
+  else if (act === 'backup') download('명함백업-' + today() + '.json', JSON.stringify({m: M, c: C, l: L}), 'application/json');
+  else if (act === 'restore') $('#restIn').click();
+});
+
+(async () => {
+  await idb(); M = await getAll('m'); C = await getAll('c'); L = await getAll('l');
+  history.replaceState(view, ''); render();
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
