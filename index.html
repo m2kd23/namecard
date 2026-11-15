@@ -312,21 +312,30 @@ function rotate(c, deg) {
   const x = o.getContext('2d'); x.translate(o.width / 2, o.height / 2); x.rotate(deg * Math.PI / 180); x.drawImage(c, -c.width / 2, -c.height / 2); return o;
 }
 /* ---------- 글자 읽기: PaddleOCR(한국어) 우선, 실패하면 Tesseract ---------- */
-let paddleP = null;
+let paddleP = null, paddleBackend = 'auto';
 const getPaddle = () => paddleP || (paddleP = (async () => {
   const mod = await import('https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2/+esm');
   const base = new URL('models/', location.href).href; // 모델 파일은 앱과 같은 곳에서 받음
   return mod.PaddleOCR.create({
     textDetectionModelName: 'PP-OCRv5_mobile_det', textDetectionModelAsset: {url: base + 'PP-OCRv5_mobile_det_onnx_infer.tar'},
     textRecognitionModelName: 'korean_PP-OCRv5_mobile_rec', textRecognitionModelAsset: {url: base + 'korean_PP-OCRv5_mobile_rec_onnx_infer.tar'},
-    ortOptions: {backend: 'auto'}
+    ortOptions: {backend: paddleBackend}
   });
 })().catch(e => { paddleP = null; throw e; }));
 async function readWithPaddle(p) {
-  const ocr = await getPaddle();
+  try { return await readWithPaddleOnce(p); }
+  catch (e) { // GPU 방식이 불안정한 폰이면 느리지만 안전한 방식(wasm)으로 다시 시도
+    if (paddleBackend === 'wasm') throw e;
+    console.warn('PaddleOCR GPU 실패, 안전 방식으로 재시도', e); paddleBackend = 'wasm'; paddleP = null;
+    return await readWithPaddleOnce(p);
+  }
+}
+async function readWithPaddleOnce(p) {
+  const ocr = await getPaddle(); let provider = '';
   let best = null;
   for (const deg of p.tall ? [0, 270, 90] : [0]) { // 옆으로 누운 명함은 방향을 돌려 보고 가장 잘 읽히는 쪽을 고름
     const [r] = await ocr.predict(deg ? rotate(p.color, deg) : p.color);
+    provider = (r.runtime && r.runtime.recProvider) || paddleBackend;
     const lines = r.items.filter(x => x.score >= 0.5).map(x => {
       const pts = (x.poly || []).map(q => Array.isArray(q) ? q : [q.x, q.y]), ys = pts.map(q => q[1]);
       return {t: cleanT(x.text), h: ys.length ? Math.max(...ys) - Math.min(...ys) : 20, y: ys.length ? Math.min(...ys) : 0};
@@ -335,7 +344,7 @@ async function readWithPaddle(p) {
       + 60 * ['name', 'phone', 'email', 'company', 'title'].filter(k => o[k]).length + 60 * o.name.length;
     if (!best || sc > best.sc) best = {sc, deg, lines};
   }
-  return {lines: best.lines, deg: best.deg};
+  return {lines: best.lines, deg: best.deg, engine: 'Paddle/' + provider};
 }
 async function readWithTesseract(p) {
   const w = await getWorker(), lines = [], words = []; let img = p.ocr, deg = 0;
@@ -355,7 +364,7 @@ async function readWithTesseract(p) {
     r.data.lines.forEach(l => { const t = cleanT(l.text); if (t && l.confidence >= 35) lines.push({t, h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0}); });
     if (mode === '11') r.data.words.forEach(x => words.push({t: x.text.trim(), x0: x.bbox.x0, x1: x.bbox.x1, h: x.bbox.y1 - x.bbox.y0, cy: (x.bbox.y0 + x.bbox.y1) / 2, conf: x.confidence}));
   }
-  return {lines, words, deg};
+  return {lines, words, deg, engine: 'Tesseract'};
 }
 async function prepare(file) {
   const bmp = await createImageBitmap(file);
@@ -377,16 +386,16 @@ async function addFiles(files) {
       draft.items.push(it); renderItems();
       ocrQ = ocrQ.then(async () => {
         if (!draft || !draft.items.includes(it)) return;
-        setStatus(it, '읽는 중…');
+        setStatus(it, '읽는 중…'); const t0 = Date.now();
         try {
           let res;
           try { res = await readWithPaddle(p); } // 1순위: PaddleOCR (더 정확)
-          catch (e) { console.warn('PaddleOCR 실패, Tesseract로 대체', e); res = await readWithTesseract(p); }
+          catch (e) { console.warn('PaddleOCR 실패, Tesseract로 대체', e); res = await readWithTesseract(p); res.engine = 'Tesseract(대체: ' + String(e && e.message || e).slice(0, 60) + ')'; }
           if (res.deg) { it.thumb = rotate(p.thumbC, res.deg).toDataURL('image/jpeg', 0.6); const im = document.querySelector(`.item[data-id="${it.id}"] img`); if (im) im.src = it.thumb; }
           const o = parseCard(res.lines, res.words || []);
           ['name', 'company', 'title', 'phone', 'email'].forEach(k => { if (!it[k]) setField(it, k, o[k]); });
-          setStatus(it, '');
-        } catch (e) { setStatus(it, '직접 입력'); }
+          setStatus(it, res.engine + ' ' + ((Date.now() - t0) / 1000).toFixed(1) + '초');
+        } catch (e) { setStatus(it, '직접 입력 (' + String(e && e.message || e).slice(0, 60) + ')'); }
       });
       }
     } catch (e) { alert('사진을 열 수 없습니다'); }
